@@ -9,7 +9,9 @@ use nova\plugin\http\HttpException;
 class Pay
 {
     private PayConfig $config;
-
+    const int PAYMENT_METHOD_ALIPAY = 2;      // 支付宝扫码（当面付）支付
+    const int PAYMENT_METHOD_WECHAT_APP = 3;  // 微信APP(赞赏码)支付
+    const int PAYMENT_METHOD_ALIPAY_APP = 4;  // 支付宝APP（收款码）支付
     public function __construct()
     {
         $this->config = new PayConfig();
