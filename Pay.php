@@ -2,6 +2,7 @@
 
 namespace nova\plugin\pay;
 
+use nova\framework\core\Logger;
 use nova\plugin\cookie\Session;
 use nova\plugin\http\HttpClient;
 use nova\plugin\http\HttpException;
@@ -143,5 +144,30 @@ class Pay
         } catch (\Exception $e) {
             throw new PayException('创建订单时发生错误: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * @throws SignException
+     */
+    public function checkSign( array $data): bool
+    {
+        // 1. 验证时间戳
+        $currentTime = time();
+        $timeWindow = 300; // 5分钟的时间窗口
+
+        $t = $data['t'] ?? 0;
+
+        if ($t <= 0) {
+            throw new SignException("时间戳不能为空");
+        }
+
+        if (abs($currentTime - $t) > $timeWindow) {
+            throw new SignException("请求已过期，请检查系统时间");
+        }
+
+        if (!SignUtils::checkSign($data, $this->config->client_secret)) {
+            throw new SignException("签名验证失败");
+        }
+        return true;
     }
 }
