@@ -1,13 +1,22 @@
 <?php
 
+declare(strict_types=1);
+
 namespace nova\plugin\pay;
 
-use nova\framework\core\Logger;
+use nova\framework\core\StaticRegister;
+
+use function nova\framework\dump;
+
+use nova\framework\event\EventManager;
+use nova\framework\exception\AppExitException;
+use nova\framework\http\Response;
 use nova\plugin\cookie\Session;
 use nova\plugin\http\HttpClient;
 use nova\plugin\http\HttpException;
+use nova\plugin\notify\Notify;
 
-class Pay
+class Pay extends StaticRegister
 {
     private PayConfig $config;
     const int PAYMENT_METHOD_ALIPAY = 2;      // 支付宝扫码（当面付）支付
@@ -19,22 +28,21 @@ class Pay
         Session::getInstance()->start();
     }
 
-
     /**
      * 创建支付订单
      *
      * 该方法会构建订单参数，生成签名，并通过HTTP请求发送到支付平台创建订单。
      * 请求使用form表单格式，包含时间戳和签名验证。
      *
-     * @param float $original_price 订单原价（元），必须大于0，由商户提交的商品原始价格
-     * @param string $product_name 商品名称，将显示在支付页面上的商品描述
-     * @param int $payment_method 支付方式，对应OrderModel中定义的支付方式常量，如：
-     *                           - PAYMENT_METHOD_WECHAT_APP: 微信APP支付
-     *                           - PAYMENT_METHOD_ALIPAY_APP: 支付宝APP支付
-     *                           - PAYMENT_METHOD_ALIPAY: 支付宝网页支付
-     * @param string $notify_url 异步通知链接，支付平台通知商户支付结果的URL，必须是有效的URL
-     * @param string $return_url 同步通知链接，用户支付完成后页面跳转的URL，必须是有效的URL
-     * @param array $extra_param 附加业务参数，商户可以传递自定义参数，将在支付回调时原样返回
+     * @param float  $original_price 订单原价（元），必须大于0，由商户提交的商品原始价格
+     * @param string $product_name   商品名称，将显示在支付页面上的商品描述
+     * @param int    $payment_method 支付方式，对应OrderModel中定义的支付方式常量，如：
+     *                               - PAYMENT_METHOD_WECHAT_APP: 微信APP支付
+     *                               - PAYMENT_METHOD_ALIPAY_APP: 支付宝APP支付
+     *                               - PAYMENT_METHOD_ALIPAY: 支付宝网页支付
+     * @param string $notify_url     异步通知链接，支付平台通知商户支付结果的URL，必须是有效的URL
+     * @param string $return_url     同步通知链接，用户支付完成后页面跳转的URL，必须是有效的URL
+     * @param array  $extra_param    附加业务参数，商户可以传递自定义参数，将在支付回调时原样返回
      *
      * @return array 返回支付平台响应的订单数据，包含订单号、支付链接等信息
      *
@@ -59,8 +67,7 @@ class Pay
         string $notify_url = "",
         string $return_url = "",
         array  $extra_param = []
-    ): array
-    {
+    ): array {
         // 构建订单参数
         $orderData = [
             'original_price' => $original_price,
@@ -75,7 +82,9 @@ class Pay
         $hash = md5(json_encode($orderData));
 
         $order = Session::getInstance()->get("order_" . $hash);
-        if (!empty($order)) return $order;
+        if (!empty($order)) {
+            return $order;
+        }
 
         $orderData['t'] = time();
 
@@ -101,13 +110,12 @@ class Pay
             $order = $responseData['data'];
             Session::getInstance()->set("order_" . $hash, $order, 300);
             return $order;
-        } catch (HttpException|PayException $e) {
+        } catch (HttpException|PayException|AppExitException $e) {
             throw $e;
         } catch (\Exception $e) {
             throw new PayException('创建订单时发生错误: ' . $e->getMessage());
         }
     }
-
 
     /**
      * @throws PayException
@@ -139,7 +147,7 @@ class Pay
                 throw new PayException($responseData['msg']);
             }
             return $responseData['data'];
-        } catch (HttpException|PayException $e) {
+        } catch (HttpException|PayException|AppExitException $e) {
             throw $e;
         } catch (\Exception $e) {
             throw new PayException('创建订单时发生错误: ' . $e->getMessage());
@@ -149,7 +157,7 @@ class Pay
     /**
      * @throws SignException
      */
-    public function checkSign( array $data): bool
+    public function checkSign(array $data): bool
     {
         // 1. 验证时间戳
         $currentTime = time();
@@ -169,5 +177,50 @@ class Pay
             throw new SignException("签名验证失败");
         }
         return true;
+    }
+
+    const string CONFIG_TPL = ROOT_PATH . DS . 'nova' . DS . 'plugin' . DS . 'pay' . DS . 'tpl' . DS . 'pay';
+
+    public static function registerInfo(): void
+    {
+        // 添加路由前事件监听器
+        EventManager::addListener("route.before", function ($event, &$data) {
+            // 检查必要的依赖类是否存在
+            if (!class_exists('\nova\plugin\cookie\Session') || !class_exists('\nova\plugin\login\LoginManager')) {
+                return;
+            }
+
+            // 检查用户是否已登录
+            if (!\nova\plugin\login\LoginManager::getInstance()->checkLogin()) {
+                return;
+            }
+
+            if ($data == "/pay/config") {
+                // 创建Webhook配置对象
+                $payConfig = new PayConfig();
+
+                // GET请求：返回配置信息
+                if ($_SERVER['REQUEST_METHOD'] == 'GET') {
+                    throw new AppExitException(Response::asJson([
+                        'code' => 200,
+                        'data' => get_object_vars($payConfig),
+                    ]));
+                }
+                // POST请求：保存配置信息
+                else {
+                    // dump($_POST);
+                    // $data = $_POST;
+                    // 更新配置参数，使用POST数据或保持默认值
+                    $payConfig->url = $_POST['url'] ?? $payConfig->url;
+                    $payConfig->client_id = $_POST['client_id'] ?? $payConfig->client_id;
+                    $payConfig->client_secret = ($_POST['client_secret'] ?? $payConfig->client_secret);
+
+                    throw new AppExitException(Response::asJson([
+                        'code' => 200,
+                        'msg' => '支付配置保存成功'
+                    ]));
+                }
+            }
+        });
     }
 }
