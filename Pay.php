@@ -25,7 +25,6 @@ class Pay extends StaticRegister
     public function __construct()
     {
         $this->config = new PayConfig();
-        Session::getInstance()->start();
     }
 
     /**
