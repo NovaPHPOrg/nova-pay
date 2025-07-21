@@ -189,12 +189,12 @@ class Pay extends StaticRegister
                 return;
             }
 
-            // 检查用户是否已登录
-            if (!\nova\plugin\login\LoginManager::getInstance()->checkLogin()) {
-                return;
-            }
-
             if ($data == "/pay/config") {
+
+                // 检查用户是否已登录
+                if (!\nova\plugin\login\LoginManager::getInstance()->checkLogin()) {
+                    return;
+                }
                 // 创建Webhook配置对象
                 $payConfig = new PayConfig();
 
