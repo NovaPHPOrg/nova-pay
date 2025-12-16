@@ -119,7 +119,6 @@ class Pay extends StaticRegister
 
     /**
      * @throws PayException
-     * @throws HttpException
      */
     public function state(string $order_id)
     {
@@ -147,10 +146,8 @@ class Pay extends StaticRegister
                 throw new PayException($responseData['msg']);
             }
             return $responseData['data'];
-        } catch (HttpException|PayException|AppExitException $e) {
-            throw $e;
-        } catch (\Exception $e) {
-            throw new PayException('创建订单时发生错误: ' . $e->getMessage());
+        } catch (HttpException|PayException $e) {
+            throw new PayException('检查订单时发生错误: ' . $e->getMessage());
         }
     }
 

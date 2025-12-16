@@ -2,7 +2,8 @@
 
 namespace nova\plugin\pay;
 
-use nova\plugin\mail\phpmail\Exception;
+
+use Exception;
 
 class SignException extends  Exception
 {
