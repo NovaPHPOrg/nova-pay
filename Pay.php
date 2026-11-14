@@ -4,24 +4,20 @@ declare(strict_types=1);
 
 namespace nova\plugin\pay;
 
-use nova\framework\core\StaticRegister;
-
-use function nova\framework\dump;
-
-use nova\framework\event\EventManager;
 use nova\framework\exception\AppExitException;
-use nova\framework\http\Response;
 use nova\plugin\cookie\Session;
 use nova\plugin\http\HttpClient;
 use nova\plugin\http\HttpException;
-use nova\plugin\notify\Notify;
 
-class Pay extends StaticRegister
+/**
+ * 支付 SDK：对接支付站创建订单、查询状态、通知用户。
+ *
+ * 后台配置页由 PayAdminTpl 挂载；API 由 PayPluginManager 注册。
+ */
+class Pay
 {
+    const string CONFIG_TPL = ROOT_PATH . DS . 'nova' . DS . 'plugin' . DS . 'pay' . DS . 'tpl' . DS . 'config';
     private PayConfig $config;
-    const int PAYMENT_METHOD_ALIPAY = 2;      // 支付宝扫码（当面付）支付
-    const int PAYMENT_METHOD_WECHAT_APP = 3;  // 微信APP(赞赏码)支付
-    const int PAYMENT_METHOD_ALIPAY_APP = 4;  // 支付宝APP（收款码）支付
     const int PAYMENT_METHOD_AFD = 5;
     public function __construct()
     {
@@ -43,6 +39,7 @@ class Pay extends StaticRegister
      * @param string $notify_url     异步通知链接，支付平台通知商户支付结果的URL，必须是有效的URL
      * @param string $return_url     同步通知链接，用户支付完成后页面跳转的URL，必须是有效的URL
      * @param array  $extra_param    附加业务参数，商户可以传递自定义参数，将在支付回调时原样返回
+     * @param string $email          支付用户邮箱（可选），用于之后调用 sendMessage 发送邮件
      *
      * @return array 返回支付平台响应的订单数据，包含订单号、支付链接等信息
      *
@@ -66,7 +63,8 @@ class Pay extends StaticRegister
         int    $payment_method = 0,
         string $notify_url = "",
         string $return_url = "",
-        array  $extra_param = []
+        array  $extra_param = [],
+        string $email = ""
     ): array {
         // 构建订单参数
         $orderData = [
@@ -77,6 +75,7 @@ class Pay extends StaticRegister
             'notify_url' => $notify_url,
             'return_url' => $return_url,
             'extra_param' => json_encode($extra_param),
+            'email' => $email,
         ];
 
         $hash = md5(json_encode($orderData));
@@ -152,6 +151,61 @@ class Pay extends StaticRegister
     }
 
     /**
+     * 请求支付站向该订单的支付用户发通知。
+     *
+     * SDK 只传内容：标题、发件人名字、纯文本、HTML。
+     * 订单下单时传了 email 就发邮件（没有则跳过），再交给对应支付渠道自行推送。
+     *
+     * @return array{mail: bool, channel: bool}
+     * @throws PayException
+     * @throws HttpException
+     */
+    public function sendMessage(
+        string $order_id,
+        string $title,
+        string $from_name,
+        string $text,
+        string $html
+    ): array {
+        $payload = [
+            'merchant_id' => $this->config->client_id,
+            'order_id' => $order_id,
+            'title' => $title,
+            'from_name' => $from_name,
+            'text' => $text,
+            'html' => $html,
+            't' => time(),
+        ];
+        $signed = SignUtils::sign($payload, $this->config->client_secret);
+
+        try {
+            $response = HttpClient::init($this->config->url)
+                ->post($signed, 'form')
+                ->send('/message');
+            $responseData = json_decode($response->getBody(), true);
+
+            if ($response->getHttpCode() !== 200) {
+                throw new PayException('用户通知失败: HTTP ' . $response->getHttpCode());
+            }
+            if (($responseData['code'] ?? 0) != 200) {
+                throw new PayException((string)($responseData['msg'] ?? '用户通知失败'));
+            }
+
+            /** @var array{mail?: bool, channel?: bool} $data */
+            $data = is_array($responseData['data'] ?? null) ? $responseData['data'] : [];
+
+            return [
+                'mail' => (bool)($data['mail'] ?? false),
+                'channel' => (bool)($data['channel'] ?? false),
+            ];
+        } catch (HttpException|PayException $e) {
+            throw $e;
+        } catch (\Exception $e) {
+            throw new PayException('用户通知时发生错误: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * @throws SignException
      */
     public function checkSign(array $data): bool
@@ -174,50 +228,5 @@ class Pay extends StaticRegister
             throw new SignException("签名验证失败");
         }
         return true;
-    }
-
-    const string CONFIG_TPL = ROOT_PATH . DS . 'nova' . DS . 'plugin' . DS . 'pay' . DS . 'tpl' . DS . 'pay';
-
-    public static function registerInfo(): void
-    {
-        // 添加路由前事件监听器
-        EventManager::addListener("route.before", function ($event, &$data) {
-            // 检查必要的依赖类是否存在
-            if (!class_exists('\nova\plugin\cookie\Session') || !class_exists('\nova\plugin\login\LoginManager')) {
-                return;
-            }
-
-            if ($data == "/pay/config") {
-
-                // 检查用户是否已登录
-                if (!\nova\plugin\login\LoginManager::getInstance()->checkLogin()) {
-                    return;
-                }
-                // 创建Webhook配置对象
-                $payConfig = new PayConfig();
-
-                // GET请求：返回配置信息
-                if ($_SERVER['REQUEST_METHOD'] == 'GET') {
-                    throw new AppExitException(Response::asJson([
-                        'code' => 200,
-                        'data' => get_object_vars($payConfig),
-                    ]));
-                }
-                // POST请求：保存配置信息
-                else {
-                    // dump($_POST);
-                    // $data = $_POST;
-                    // 更新配置参数，使用POST数据或保持默认值
-                    $payConfig->url = $_POST['url'] ?? $payConfig->url;
-                    $payConfig->client_id = $_POST['client_id'] ?? $payConfig->client_id;
-                    $payConfig->client_secret = ($_POST['client_secret'] ?? $payConfig->client_secret);
-
-                    throw new AppExitException(Response::asJson([
-                        'code' => 200,
-                        'msg' => '支付配置保存成功'
-                    ]));
-                }
-            }
-        });
     }
 }
