@@ -40,7 +40,7 @@
                             helper=""
                         ></mdui-text-field>
                     </div>
-                    <div class="col-md6">
+                    <div class="col-md12">
                         <mdui-text-field
                             label="客户端密钥"
                             name="client_secret"
@@ -60,17 +60,4 @@
     </div>
 </div>
 
-<script id="script">
-    window.pageLoadFiles = [
-        'Form'
-    ];
-
-    window.pageOnLoad = function (loading) {
-
-        $.form.manage("/pay/config","#payForm")
-        // 处理渠道状态开关变化
-        window.pageOnUnLoad = function () {
-            // 页面卸载时的清理工作
-        };
-    };
-</script>
+<script id="script" src="/pay/static/js/config.js?v={$__v}"></script>
